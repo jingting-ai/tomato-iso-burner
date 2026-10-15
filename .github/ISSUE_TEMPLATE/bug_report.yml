@@ -1,0 +1,73 @@
+name: 报告问题
+description: 刻录失败、界面异常、程序崩溃、安装/启动问题等
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填写以下信息，帮助我们快速定位问题。
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本
+      description: 在「关于」面板或程序底栏看到的版本号
+      placeholder: 例如 v1.2.54（Beta）
+    validations:
+      required: true
+  - type: dropdown
+    id: edition
+    attributes:
+      label: 运行形态
+      description: 你运行的是哪种版本？
+      options:
+        - 安装版（通过 NSIS 安装到 Program Files）
+        - 单文件便携版（绿色版 .exe）
+        - 绿色目录版（解压后的文件夹）
+        - 源码 / 开发环境
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统版本
+      placeholder: 例如 Windows 11 24H2 (Build 26100)
+    validations:
+      required: true
+  - type: textarea
+    id: describe
+    attributes:
+      label: 问题描述
+      description: 简洁地描述你遇到的问题
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 从打开程序开始，一步步说明如何触发该问题
+      placeholder: |
+        1. 打开程序
+        2. 选择 xxx.iso
+        3. 选中某 U 盘
+        4. 点击「开始刻录」
+        5. 出现 xxx 错误
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 vs 实际结果
+      description: 你期望发生什么？实际发生了什么？
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图 / 错误码
+      description: |
+        如有报错，请贴出完整错误信息、截图或日志路径：
+        - 安装版：`%APPDATA%\番茄镜像刻录工具\startup.log`
+        - 绿色版：程序启动日志会生成在 `%TEMP%\tomato-iso-burner*` 下
+        - 刻录日志：`%LOCALAPPDATA%\TomatoIsoBurner\logs\burn-latest.jsonl`
+      render: markdown
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充
+      description: 镜像名称与大小、U 盘型号、USB 接口版本等任何可能有用的信息

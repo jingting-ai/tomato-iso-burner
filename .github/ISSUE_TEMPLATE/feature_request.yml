@@ -1,0 +1,33 @@
+name: 功能建议
+description: 想要的新功能、改进建议或交互优化
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出建议！请描述清楚「为什么需要」以及「希望怎么做」。
+  - type: textarea
+    id: background
+    attributes:
+      label: 使用场景 / 需求背景
+      description: 你在什么情况下需要这个功能？
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的功能或改动
+      description: 你希望程序如何表现？可以包含界面、流程、文案等细节
+    validations:
+      required: true
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 替代方案
+      description: 如果该功能暂时不实现，你目前是怎么处理的？
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其他补充
+      description: 参考链接、竞品实现、截图等任何补充信息
