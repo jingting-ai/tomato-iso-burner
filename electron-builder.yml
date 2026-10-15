@@ -1,0 +1,88 @@
+# ⚠️ appId 故意保留历史值 com.doro.isoburner，不跟着产品名改。
+#    NSIS 的 APP_GUID 是从 appId 派生的，这个 GUID 决定「安装时能不能识别出本机已装过的旧版」。
+#    改了 appId ⇒ 新 GUID ⇒ 老版本永远卸不掉，控制面板里会同时留两条记录。
+#    产品名（productName / 快捷方式 / 卸载显示名）该改就改，这个不动。
+appId: com.doro.isoburner
+productName: 番茄镜像刻录工具
+copyright: Copyright © 2026 敬亭
+# 固定版本：electron-builder 需要确切的 Electron 版本才能下载对应平台二进制
+electronVersion: 33.4.11
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+asar: true
+compression: maximum
+asarUnpack:
+  - out/main/burnWorker.js
+# Windows 原生脚本：放到 resources 下（asar 之外），运行时由主进程调用
+extraResources:
+  - from: assets/burn.ps1
+    to: burn.ps1
+  # U 盘急救修复脚本（程序内「U 盘修复」模式用；由 tools/修复U盘.ps1 派生）
+  - from: assets/repair.ps1
+    to: repair.ps1
+  # 应用图标：运行时主进程用它设置窗口图标（打包后 exe 自带图标，这里只是保持一致）
+  - from: build/icon.ico
+    to: app-icon.ico
+
+# macOS 打包配置：2026-10-13 用户决定「先不开发 macOS」（手边没有 mac 环境），
+# 整段先摘掉。将来要恢复，把下面这段加回来即可 ——
+#   mac:
+#     category: public.app-category.utilities
+#     target:
+#       - target: dmg
+#         arch: [x64, arm64]
+#       - target: zip
+#         arch: [arm64]
+#     darkModeSupport: false
+#     hardenedRuntime: false
+#     gatekeeperAssess: false
+#     artifactName: ${productName}-${version}-mac-${arch}.${ext}
+#     icon: build/icon.png        # 由 tools/make-icon.py 生成（1024x1024）
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+  # 图标：由 tools/make-icon.py 生成（build/icon.ico，内含 16~256 七个尺寸）
+  # 换了这张图之后，任务栏、窗口、桌面/开始菜单快捷方式、安装向导的图标都会一起变。
+  icon: build/icon.ico
+  requestedExecutionLevel: requireAdministrator
+
+nsis:
+  oneClick: false
+  perMachine: true
+  # 自定义安装脚本：安装前显示「已安装版本 → 本次安装版本」确认页
+  # （electron-builder 默认会静默卸载旧版再装新版，不给任何提示，容易让人以为没反应）
+  include: build/installer.nsh
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 番茄镜像刻录工具
+  # 安装向导 / 卸载程序 / 向导头部 的图标都用同一张（默认会取 app 图标，这里显式声明）
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  # 安装向导界面使用简体中文（LCID 2052）
+  language: '2052'
+  installerLanguages:
+    - zh_CN
+  uninstallDisplayName: 番茄镜像刻录工具
+  deleteAppDataOnUninstall: false
+  displayLanguageSelector: false
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+publish: null

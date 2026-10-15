@@ -1,0 +1,270 @@
+# -*- coding: utf-8 -*-
+"""v1.2.6-r1 写盘脚本补丁：
+① Clear-DiskLayout 每一招打完都重新数分区，还剩就继续下一招
+   （Clear-Disk → 逐个 Remove-Partition → diskpart clean → 盘头清零）
+② 最后写首块的重试从「傻等 500ms」升级为主写入循环同款自救
+   （重新清分区表 → 重开句柄 → 重新锁卷）
+③ 恢复提示里写死的过期路径 E:\番茄镜像刻录工具-1.2.4\... 改成动态探测
+④ 版本标记 burn-1.2.5-r7 → burn-1.2.6-r1
+"""
+import io, sys
+
+P = 'assets/burn.ps1'
+raw = open(P, 'rb').read()
+nl = '\r\n' if b'\r\n' in raw[:4000] else '\n'
+text = raw.decode('utf-8-sig')
+
+def replace_once(s, old, new, tag):
+    n = s.count(old)
+    if n != 1:
+        print('!! [%s] 锚点出现 %d 次，中止' % (tag, n))
+        sys.exit(1)
+    print('OK  [%s]' % tag)
+    return s.replace(old, new, 1)
+
+# ---------- ① Clear-DiskLayout 整个函数 ----------
+a1 = 'function Clear-DiskLayout([int]$diskNo) {'
+a2 = '# ---------------------------------------------------------------- main'
+i1 = text.index(a1)
+i2 = text.index(a2)
+new_fn = nl.join([
+"function Get-LeftPartitionCount([int]$diskNo) {",
+"  try { return @(Get-Partition -DiskNumber $diskNo -ErrorAction Stop).Count } catch { return 0 }",
+"}",
+"",
+"# 彻底清除目标磁盘的分区表，让 Windows 卷管理器【卸载并移除该盘上的所有卷对象】。",
+"#   【为什么必须做】Windows 拒绝对「某个已挂载卷的第一个扇区」做裸写入（错误码 5）。",
+"#   只「锁定 + 卸除」卷挡不住：EFI / MSR 这类分区没有可识别的文件系统，句柄根本",
+"#   打不开、锁不上，卷对象会一直留着，保护一直生效。唯一有效的办法是把分区表",
+"#   整个删掉，让卷对象随之消失。镜像自带完整分区表，在写入的最后一步（被推迟的",
+"#   首块）才落盘，所以写入全程都不会再被拦。",
+"#   调用前必须先释放卷锁并关闭物理磁盘句柄，否则清理会被自己挡住。",
+"#",
+"#   ★ r8 流程修正（2026-10-14 真实故障）：以前「方式 1（Clear-Disk）命令成功」",
+"#   就直接跳过后面的招，哪怕盘上还剩 1 个分区。实测某 U 盘清完仍剩 1 个分区、",
+"#   正好盖住 0 扇区 —— 前 14.15 GB 全部写成功，最后写首块（分区表）被错误码 5",
+"#   拦住，重试 4 次全败。现在每一招打完都【重新数一遍分区】，只要还剩就继续：",
+"#   Clear-Disk → 逐个 Remove-Partition → diskpart clean → 盘头 64KB 清零。",
+"# 返回 @{ ok=bool; method=string; left=int; detail=string }",
+"function Clear-DiskLayout([int]$diskNo) {",
+"  $r = @{ ok = $false; method = ''; left = -1; detail = '' }",
+"  $tried = @()",
+"  $left = Get-LeftPartitionCount $diskNo",
+"",
+"  # --- 方式 1：Clear-Disk（Windows 存储模块原生命令，等价于「删除所有分区」）---",
+"  if ($left -gt 0) {",
+"    try {",
+"      Clear-Disk -Number $diskNo -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop",
+"      $tried += 'Clear-Disk'",
+"    } catch {",
+"      $r.detail = \"Clear-Disk：$($_.Exception.Message)\"",
+"    }",
+"    $left = Get-LeftPartitionCount $diskNo",
+"  }",
+"",
+"  # --- 方式 2：逐个 Remove-Partition（Clear-Disk 有时会留下个别分区，手动删）---",
+"  if ($left -gt 0) {",
+"    try {",
+"      Get-Partition -DiskNumber $diskNo -ErrorAction SilentlyContinue |",
+"        ForEach-Object {",
+"          try {",
+"            Remove-Partition -DiskNumber $diskNo -PartitionNumber $_.PartitionNumber ```",
+"              -Confirm:$false -ErrorAction Stop",
+"          } catch { }",
+"        }",
+"      $tried += 'Remove-Partition'",
+"    } catch { }",
+"    $left = Get-LeftPartitionCount $diskNo",
+"  }",
+"",
+"  # --- 方式 3：diskpart clean（上面都不行时的等价后备）---",
+"  if ($left -gt 0) {",
+"    try {",
+"      $dp = Join-Path $env:SystemRoot 'System32\\diskpart.exe'",
+"      $sf = Join-Path $env:TEMP (\"tomato-clean-{0}.txt\" -f $PID)",
+"      # diskpart 只认 ANSI；脚本内容全是 ASCII，用 ASCII 写即可",
+"      [System.IO.File]::WriteAllText($sf, \"select disk $diskNo``r``nclean``r``n\",",
+"        [System.Text.Encoding]::ASCII)",
+"      $out = (& $dp /s $sf 2>&1 | Out-String)",
+"      $code = $LASTEXITCODE",
+"      Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue",
+"      if ($code -eq 0) {",
+"        $tried += 'diskpart clean'",
+"      } else {",
+"        $tail = (($out -split \"``r?``n\" | Where-Object { $_.Trim() -ne '' } |",
+"          Select-Object -Last 2) -join ' / ')",
+"        $r.detail += \" ；diskpart 退出码 $code（$tail）\"",
+"      }",
+"    } catch {",
+"      $r.detail += \" ；diskpart：$($_.Exception.Message)\"",
+"    }",
+"    $left = Get-LeftPartitionCount $diskNo",
+"  }",
+"",
+"  # --- 方式 4：直接把盘头 64 KB 清零（覆盖保护性 MBR + GPT 头 + 分区表项），",
+"  #             再让系统重读磁盘属性。属于最后手段：能破坏磁盘上的分区表，",
+"  #             但未必能立刻让卷管理器丢掉已有卷对象。---",
+"  if ($left -gt 0) {",
+"    $h = [IntPtr]::Zero",
+"    try {",
+"      $h = New-DeviceHandle $DevicePath $true $shareRW $true",
+"      if (Test-BadHandle $h) {",
+"        $r.detail += \" ；盘头清零时无法打开磁盘（错误码 $(Get-OpenError)）\"",
+"      } else {",
+"        $n = 65536",
+"        $pz = [TomatoBurn]::VirtualAlloc([IntPtr]::Zero, [System.UIntPtr]::new([uint64]$n),",
+"                [int64]([TomatoBurn]::MEM_COMMIT -bor [TomatoBurn]::MEM_RESERVE),",
+"                [int64][TomatoBurn]::PAGE_READWRITE)",
+"        if (Test-BadHandle $pz) {",
+"          $r.detail += ' ；盘头清零缓冲区分配失败'",
+"        } else {",
+"          try {",
+"            [void][TomatoBurn]::SetFilePointerEx($h, [int64]0, [IntPtr]::Zero, [TomatoBurn]::FILE_BEGIN)",
+"            [uint32]$moved = 0",
+"            $w = [TomatoBurn]::WriteFile($h, $pz, [uint32]$n, [ref]$moved, [IntPtr]::Zero)",
+"            # 错误码必须紧跟 Win32 调用内联获取，中间不许经过任何函数调用",
+"            $wec = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+"            $ret = 0",
+"            [void][TomatoBurn]::DeviceIoControl($h, [TomatoBurn]::IOCTL_DISK_UPDATE_PROPERTIES,",
+"              [IntPtr]::Zero, 0, [IntPtr]::Zero, 0, [ref]$ret, [IntPtr]::Zero)",
+"            if ($w) {",
+"              $tried += '盘头清零(64KB)'",
+"            } else {",
+"              $r.detail += \" ；盘头清零写入失败（错误码 $wec）\"",
+"            }",
+"          } finally {",
+"            [void][TomatoBurn]::VirtualFree($pz, [System.UIntPtr]::new([uint64]0),",
+"              [int64][TomatoBurn]::MEM_RELEASE)",
+"          }",
+"        }",
+"      }",
+"    } catch {",
+"      $r.detail += \" ；盘头清零：$($_.Exception.Message)\"",
+"    } finally {",
+"      Close-Native $h",
+"    }",
+"    $left = Get-LeftPartitionCount $diskNo",
+"  }",
+"",
+"  $r.left = $left",
+"  if ($left -eq 0) {",
+"    $r.ok = $true",
+"    $r.method = if ($tried.Count -gt 0) { $tried -join ' + ' } else { '原本就没有分区' }",
+"  } else {",
+"    $r.detail += \" ；清理后仍残留 $left 个分区\"",
+"  }",
+"  return $r",
+"}",
+"",
+"",
+])
+text = text[:i1] + new_fn + text[i2:]
+print('OK  [① Clear-DiskLayout 重写]')
+
+# ---------- ② 首块写入重试 ----------
+old_retry = nl.join([
+"      $fok = $false",
+"      $fec = 0",
+"      for ($tryNo = 1; $tryNo -le 5; $tryNo++) {",
+"        if (-not [TomatoBurn]::SetFilePointerEx($hDev, [int64]0, [IntPtr]::Zero, [TomatoBurn]::FILE_BEGIN)) {",
+"          $fec = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+"          break",
+"        }",
+"        [uint32]$fmoved = 0",
+"        $fok = [TomatoBurn]::WriteFile($hDev, $pBuf, [uint32]$firstWriteLen, [ref]$fmoved, [IntPtr]::Zero)",
+"        if ($fok -and [int64]$fmoved -eq [int64]$firstWriteLen) { $fok = $true; break }",
+"        $fok = $false",
+"        $fec = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+"        if ($tryNo -lt 5) {",
+"          Log @{ type = 'info'; message = \"写入首块失败（Windows 错误码 $fec），正在重试（第 $tryNo/4 次）…\" }",
+"          Start-Sleep -Milliseconds 500",
+"        }",
+"      }",
+])
+new_retry = nl.join([
+"      $fok = $false",
+"      $fec = 0",
+"      $fbRemount = @(5, 32, 33, 1)",
+"      for ($tryNo = 1; $tryNo -le 5; $tryNo++) {",
+"        if (-not [TomatoBurn]::SetFilePointerEx($hDev, [int64]0, [IntPtr]::Zero, [TomatoBurn]::FILE_BEGIN)) {",
+"          $fec = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+"          break",
+"        }",
+"        [uint32]$fmoved = 0",
+"        $fok = [TomatoBurn]::WriteFile($hDev, $pBuf, [uint32]$firstWriteLen, [ref]$fmoved, [IntPtr]::Zero)",
+"        if ($fok -and [int64]$fmoved -eq [int64]$firstWriteLen) { $fok = $true; break }",
+"        $fok = $false",
+"        $fec = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()",
+"        if ($tryNo -ge 5) { break }",
+"        # ★ r8：这里以前只是傻等 500ms 再原样重写 —— 碰上「清分区表后仍残留的",
+"        #   幽灵分区盖住 0 扇区」（错误码 5），等多少次都没用。2026-10-14 实测：",
+"        #   前 14.15 GB 全部写成功，最后 1 MB 被拒，重试 4 次全败。",
+"        #   现在与主写入循环同一套自救：重新清分区表（★ 此时首块尚未落盘，",
+"        #   清掉不会损失任何已写内容）→ 重开句柄 → 重新锁卷。",
+"        if ($fbRemount -contains $fec -and $isRealDisk) {",
+"          Log @{ type = 'info'; message = \"写入首块失败（Windows 错误码 $fec）：正在重新清除残留分区并重开句柄后重试（第 $tryNo/4 次）…\" }",
+"          Release-Volumes $volHandles",
+"          $volHandles.Clear()",
+"          try {",
+"            Close-Native $hDev",
+"            $hDev = [IntPtr]::Zero",
+"            $clrF = @(Clear-DiskLayout $diskNo)[-1]",
+"            if ($clrF.ok) {",
+"              Log @{ type = 'info'; message = \"重试前已再次清除分区表（方式：$($clrF.method)；剩余分区 $($clrF.left) 个）。\" }",
+"            } else {",
+"              Log @{ type = 'warn'; message = \"重试时清除分区表未完全成功（剩余分区 $($clrF.left) 个）$($clrF.detail)\" }",
+"            }",
+"          } catch {",
+"            Log @{ type = 'warn'; message = \"重试时清除分区表出错（$($_.Exception.Message)），继续重试…\" }",
+"          }",
+"          $rd = Reset-DiskHandle $hDev",
+"          if (-not $rd.ok) {",
+"            $hDev = [IntPtr]::Zero",
+"            throw \"重新打开物理磁盘失败（错误码 $($rd.error)）\"",
+"          }",
+"          $hDev = $rd.handle",
+"          try {",
+"            $relockF = Lock-TargetVolumes $diskNo",
+"            foreach ($rh in $relockF.handles) { [void]$volHandles.Add($rh) }",
+"            if ($relockF.failed -gt 0) { Release-Volumes $volHandles; $volHandles.Clear() }",
+"          } catch { }",
+"        } else {",
+"          Log @{ type = 'info'; message = \"写入首块失败（Windows 错误码 $fec），正在重试（第 $tryNo/4 次）…\" }",
+"          Start-Sleep -Milliseconds 500",
+"        }",
+"      }",
+])
+text = replace_once(text, old_retry, new_retry, '② 首块重试升级')
+
+# ---------- ③ 恢复提示：去掉写死的过期路径 ----------
+old_hint = nl.join([
+"  if ($emsg -match '写入设备失败|写入不完整|校验读盘失败|设备上没有空间|设备未就绪|拒绝访问|I/O') {",
+"    Log @{ type = 'info'; message = '【如何恢复 U 盘】刻录失败后 U 盘停在半截状态，这是可以恢复的：运行「E:\\番茄镜像刻录工具-1.2.4\\修复U盘\\一键修复U盘.cmd」重建分区表即可变回普通 U 盘。若它提示找不到 USB 盘，拔下等 10 秒重插（优先插机箱背后的 USB 口）再运行一次。' }",
+"  }",
+])
+new_hint = nl.join([
+"  if ($emsg -match '写入设备失败|写入不完整|校验读盘失败|设备上没有空间|设备未就绪|拒绝访问|I/O|首块') {",
+"    # 修复工具跟发布包走：从脚本自己的位置往外找，找不到再退回常用位置。",
+"    # ⚠️ 这里曾经写死过 E:\\番茄镜像刻录工具-1.2.4\\... —— 版本一换代路径就失效，",
+"    #    用户照着点必然「找不到文件」（2026-10-14 实际发生）。",
+"    $repairHint = '运行发布包里「修复U盘」文件夹中的「一键修复U盘.cmd」'",
+"    try {",
+"      $here = Split-Path $PSCommandPath",
+"      $cand = @(",
+"        (Join-Path $here '一键修复U盘.cmd'),",
+"        (Join-Path (Join-Path $here '修复U盘') '一键修复U盘.cmd'),",
+"        (Join-Path (Split-Path $here) '修复U盘\\一键修复U盘.cmd'),",
+"        'E:\\番茄镜像刻录工具\\修复U盘\\一键修复U盘.cmd'",
+"      ) | Where-Object { Test-Path $_ } | Select-Object -First 1",
+"      if ($cand) { $repairHint = \"运行「$cand」\" }",
+"    } catch { }",
+"    Log @{ type = 'info'; message = \"【如何恢复 U 盘】刻录失败后 U 盘停在半截状态，这是可以恢复的：$repairHint 重建分区表即可变回普通 U 盘。若它提示找不到 USB 盘，拔下等 10 秒重插（优先插机箱背后的 USB 口）再运行一次。\" }",
+"  }",
+])
+text = replace_once(text, old_hint, new_hint, '③ 恢复提示动态化')
+
+# ---------- ④ 版本标记 ----------
+text = replace_once(text, 'burn-1.2.5-r7', 'burn-1.2.6-r1', '④ 版本标记')
+
+open(P, 'wb').write(b'\xef\xbb\xbf' + text.encode('utf-8'))
+print('已写回（UTF-8 BOM，换行 %s）' % (repr(nl)))

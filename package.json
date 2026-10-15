@@ -1,0 +1,44 @@
+{
+  "name": "tomato-iso-burner",
+  "productName": "番茄镜像刻录工具",
+  "version": "1.2.54",
+  "description": "番茄镜像刻录工具 — Windows 平台镜像刻录工具，本地离线运行",
+  "main": "./out/main/index.js",
+  "author": "敬亭",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "prebuild": "node tools/version.cjs auto",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json",
+    "probe:selftest": "esbuild tools/probe-selftest.ts --bundle --platform=node --format=cjs --outfile=dist/_probe-selftest.cjs --log-level=warning && node dist/_probe-selftest.cjs",
+    "qr:verify": "node tools/verify-qr.cjs src/renderer/src/assets/donate-wechat.png src/renderer/src/assets/donate-alipay.png",
+    "ui:about": "electron tools/about-shot.cjs",
+    "version:auto": "node tools/version.cjs auto",
+    "version:patch": "node tools/version.cjs patch",
+    "version:minor": "node tools/version.cjs minor",
+    "version:major": "node tools/version.cjs major",
+    "dist:win": "electron-vite build && electron-builder --win --x64",
+    "dist:portable": "electron-vite build && electron-builder --win --x64 && node tools/package-win.cjs",
+    "icon:make": "python tools/make-icon.py"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/asar": "^4.3.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

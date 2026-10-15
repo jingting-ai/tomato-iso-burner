@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>番茄镜像刻录工具</title>
+    <script>
+      // 在样式表与 React 加载之前先把主题定下来，避免启动瞬间闪一下白底。
+      // 与界面「外观」设置共用同一个 localStorage 键。
+      ;(function () {
+        try {
+          var pref =
+            localStorage.getItem('tomato.theme') || localStorage.getItem('doro.theme') || 'auto'
+          var dark =
+            pref === 'dark' ||
+            (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light')
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <!-- 启动占位：脚本没跑起来时，用户看到的是这句话，而不是一整片空白。
+           「窗口是白的」和「窗口卡在正在启动」是两个完全不同的故障，一眼就能分开。
+           真正挂载前 main.tsx 会把它移除。样式内联，不依赖样式表（样式表也可能加载失败）。 -->
+      <div
+        id="boot-splash"
+        style="font:14px/1.7 'Microsoft YaHei',system-ui,sans-serif;color:#8b93a3;padding:52px 60px;letter-spacing:.06em"
+      >
+        正在启动…
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
