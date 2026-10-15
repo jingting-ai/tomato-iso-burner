@@ -6,11 +6,11 @@ export const APP_NAME = '番茄镜像刻录工具'
 /** 开发者 */
 export const APP_AUTHOR = '敬亭'
 /** 版本号（语义化版本 major.minor.patch） */
-export const APP_VERSION = '1.2.54'
+export const APP_VERSION = '1.2.55'
 /** 构建号：YYYYMMDD.HHMM */
-export const APP_BUILD = '20261015.1020'
+export const APP_BUILD = '20261015.1647'
 /** 构建时间（本地时间） */
-export const APP_BUILD_TIME = '2026-10-15 10:20:20'
+export const APP_BUILD_TIME = '2026-10-15 16:47:55'
 /** 版权信息 */
 export const APP_COPYRIGHT = 'Copyright © 2026 敬亭'
 /** 发布渠道：Alpha / Beta / RC；正式版为空字符串 */

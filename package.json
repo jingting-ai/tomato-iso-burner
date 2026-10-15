@@ -1,7 +1,7 @@
 {
   "name": "tomato-iso-burner",
   "productName": "番茄镜像刻录工具",
-  "version": "1.2.54",
+  "version": "1.2.55",
   "description": "番茄镜像刻录工具 — Windows 平台镜像刻录工具，本地离线运行",
   "main": "./out/main/index.js",
   "author": "敬亭",

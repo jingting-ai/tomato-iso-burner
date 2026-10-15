@@ -153,6 +153,79 @@ function Enable-AutoMount {
   }
 }
 
+# 刻录完成后，主动给目标磁盘上「没有盘符、但文件系统被 Windows 识别」的分区分配盘符。
+# 原因：Windows 自动挂载对很多 ISO 镜像（Linux/PE/特殊启动盘）不总是会给数据分区
+# 自动分配盘符，导致用户在「此电脑」里看不到 U 盘。Rufus 写完后会主动做这一步。
+# 本函数只处理 FAT/FAT32/exFAT/NTFS/ReFS 等可识别文件系统，并跳过 EFI/MSR/恢复分区。
+# 分配失败只记录日志，不影响刻录成功的状态。
+function Assign-MissingDriveLetters([int]$diskNo) {
+  $assigned = New-Object System.Collections.Generic.List[string]
+  $skipped  = New-Object System.Collections.Generic.List[string]
+  $errors   = New-Object System.Collections.Generic.List[string]
+  if ($diskNo -lt 0) {
+    return @{ assigned = $assigned; skipped = $skipped; errors = $errors }
+  }
+  try {
+    $parts = @(Get-Partition -DiskNumber $diskNo -ErrorAction SilentlyContinue)
+    if ($parts.Count -eq 0) { return @{ assigned = $assigned; skipped = $skipped; errors = $errors } }
+    foreach ($p in $parts) {
+      try {
+        $partNo = [int]$p.PartitionNumber
+        $dl = [string]$p.DriveLetter
+        if ($dl -and $dl.Trim().Length -gt 0) {
+          [void]$skipped.Add("Part#${partNo}：已有盘符 ${dl}:")
+          continue
+        }
+        $type = [string]$p.Type
+        $gptType = ''
+        try { $gptType = [string]$p.GptType } catch { }
+        # EFI 系统分区（Windows 默认不给盘符）
+        if ($gptType -eq 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' -or
+            $type -eq 'System' -or $type -eq 'Efi') {
+          [void]$skipped.Add("Part#${partNo}：EFI 系统分区")
+          continue
+        }
+        # MSR / 恢复 / OEM / LDM 元数据等系统分区
+        if ($gptType -match 'e3c9e316-0b5c-4db8-817d-f92df00215ae' -or  # MSR
+            $gptType -match 'de94bba4-06d1-4d40-a16a-bfd50179d6ac' -or  # 恢复
+            $gptType -match '5808c8aa-7e8f-42e0-85d2-e1e90434cfb3' -or  # LDM 元数据
+            $gptType -match 'af9b60a6-1431-4f62-bc68-3311714a69ad' -or  # LDM 数据
+            $type -match 'Recovery|Reserved|OEM|Msrv|MetaData') {
+          [void]$skipped.Add("Part#${partNo}：系统保留分区")
+          continue
+        }
+        # 只给 Windows 能识别的文件系统分配盘符；RAW / Linux 分区分配了也没用
+        $vol = $null
+        try { $vol = Get-Volume -Partition $p -ErrorAction SilentlyContinue } catch { }
+        $fs = if ($vol) { [string]$vol.FileSystem } else { '' }
+        $recognizable = @('FAT', 'FAT32', 'exFAT', 'NTFS', 'ReFS')
+        if ($recognizable -notcontains $fs) {
+          [void]$skipped.Add("Part#${partNo}：文件系统 [$fs] 不识别或为 RAW")
+          continue
+        }
+        try {
+          Add-PartitionAccessPath -DiskNumber $diskNo -PartitionNumber $partNo `
+            -AssignDriveLetter -ErrorAction Stop | Out-Null
+          $newP = Get-Partition -DiskNumber $diskNo -PartitionNumber $partNo `
+            -ErrorAction SilentlyContinue
+          $newLetter = if ($newP -and $newP.DriveLetter) { [string]$newP.DriveLetter } else { '?' }
+          [void]$assigned.Add("${newLetter}:")
+          Log @{ type = 'info'; message = "已为分区 ${partNo} 分配盘符 ${newLetter}:（文件系统 ${fs}）" }
+        } catch {
+          [void]$errors.Add("Part#${partNo}：$($_.Exception.Message)")
+          Log @{ type = 'warn'; message = "为分区 ${partNo} 分配盘符失败：$($_.Exception.Message)" }
+        }
+      } catch {
+        [void]$errors.Add("Part#${partNo}：$($_.Exception.Message)")
+        Log @{ type = 'warn'; message = "检查分区 ${partNo} 时出错：$($_.Exception.Message)" }
+      }
+    }
+  } catch {
+    Log @{ type = 'warn'; message = "刻录后分配盘符扫描失败：$($_.Exception.Message)" }
+  }
+  return @{ assigned = $assigned; skipped = $skipped; errors = $errors }
+}
+
 # ---------------------------------------------------------------- Win32
 Add-Type @"
 using System;
@@ -698,7 +771,7 @@ try {
     $scriptSha = ([System.Security.Cryptography.SHA256]::Create().ComputeHash($selfBytes)[0..3] |
       ForEach-Object { $_.ToString('x2') }) -join ''
   } catch { $scriptSha = 'unknown' }
-  Log @{ type = 'info'; message = "写盘脚本：$PSCommandPath（版本标记 burn-1.2.6-r1，sha 前 8 位 $scriptSha）。若此条日志缺失，说明运行的是旧版脚本。" }
+  Log @{ type = 'info'; message = "写盘脚本：$PSCommandPath（版本标记 burn-1.2.6-r2，sha 前 8 位 $scriptSha）。若此条日志缺失，说明运行的是旧版脚本。" }
 
   if (-not (Test-Path $ImagePath)) {
     Log @{ type = 'error'; message = "找不到镜像文件：$ImagePath" }
@@ -1245,7 +1318,7 @@ try {
     Log @{ type = 'info'; message = "校验通过，设备 SHA256：$verifySha" }
   }
 
-  # ---------- 步骤 6：恢复自动挂载并重新读取分区表 ----------
+  # ---------- 步骤 6：恢复自动挂载、重新读取分区表并主动分配盘符 ----------
   if ($isRealDisk) {
     # 必须先恢复自动挂载，再通知 Windows 重新扫描分区表，
     # 否则新分区不会被分配盘符，用户看不到 U 盘（虽然启动功能已正常）。
@@ -1260,11 +1333,23 @@ try {
     $ret = 0
     [void][TomatoBurn]::DeviceIoControl($hDev, [TomatoBurn]::IOCTL_DISK_UPDATE_PROPERTIES,
       [IntPtr]::Zero, 0, [IntPtr]::Zero, 0, [ref]$ret, [IntPtr]::Zero)
+
+    # 写盘前锁定的旧卷句柄必须释放，Windows 卷管理器才能用新分区表重建卷对象。
+    Release-Volumes $volHandles
+    $volHandles.Clear()
+
+    # ★ r1.2.55：Windows 自动挂载对很多 ISO 镜像不生效，导致「此电脑」里看不到 U 盘。
+    #   Rufus 写完后会主动给可识别分区分配盘符；这里做同样的事，跳过 EFI/MSR/恢复分区。
+    $assignRes = Assign-MissingDriveLetters $diskNo
+    if ($assignRes.assigned.Count -gt 0) {
+      Log @{ type = 'info'; message = "已为以下分区分配盘符：$($assignRes.assigned -join '、')" }
+    }
+    if ($assignRes.errors.Count -gt 0) {
+      Log @{ type = 'warn'; message = "部分分区未能分配盘符：$($assignRes.errors -join '；')" }
+    }
   }
 
-  # ---------- 步骤 7：释放全部句柄 ----------
-  Release-Volumes $volHandles
-  $volHandles.Clear()
+  # ---------- 步骤 7：关闭物理磁盘句柄并释放缓冲区 ----------
   Close-Native $hDev
   $hDev = [IntPtr]::Zero
   if (-not (Test-BadHandle $pBuf)) {
